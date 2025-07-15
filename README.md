@@ -26,7 +26,7 @@
 
 ### 必要配置
 1. **启用插件**：`enable_heartflow = true`
-2. **8B判断模型配置**：
+2. **小参数判断模型配置**：
    - `judge_provider_name`：在AstrBot中配置的提供商名称（如：OpenAI、Claude等）
 
 ### 可选配置
