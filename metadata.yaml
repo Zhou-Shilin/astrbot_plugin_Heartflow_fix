@@ -2,4 +2,4 @@ name: heartflow
 desc: 基于双LLM架构的智能群聊主动回复系统 - 小模型快速判断 + 大模型高质量回复
 author: Jason.Joestar
 version: 1.0.0
-repo: https://github.com/Soulter/AstrBot
+repo: https://github.com/advent259141/Astrbot_plugin_Heartflow
