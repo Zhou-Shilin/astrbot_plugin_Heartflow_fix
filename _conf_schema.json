@@ -9,7 +9,7 @@
     "description": "判断模型提供商名称",
     "type": "string",
     "default": "",
-    "hint": "用于8B模型判断的提供商名称，如配置的OpenAI、Claude等提供商"
+    "hint": "用于小参数模型判断的提供商名称，如配置的OpenAI、Claude等提供商"
   },
   "reply_threshold": {
     "description": "回复阈值(0-1)",

@@ -46,7 +46,7 @@ class HeartflowPlugin(star.Star):
         super().__init__(context)
         self.config = config
 
-        # 8B判断模型配置
+        # 判断模型配置
         self.judge_provider_name = self.config.get("judge_provider_name", "")
 
         # 心流参数配置
@@ -71,11 +71,11 @@ class HeartflowPlugin(star.Star):
 
         logger.info("心流插件已初始化")
 
-    async def judge_with_8b_model(self, event: AstrMessageEvent) -> JudgeResult:
-        """使用8B模型进行智能判断"""
+    async def judge_with_tiny_model(self, event: AstrMessageEvent) -> JudgeResult:
+        """使用小模型进行智能判断"""
 
         if not self.judge_provider_name:
-            logger.warning("8B判断模型提供商名称未配置，跳过心流判断")
+            logger.warning("小参数判断模型提供商名称未配置，跳过心流判断")
             return JudgeResult(should_reply=False, reasoning="提供商未配置")
 
         # 获取指定的 provider
@@ -93,7 +93,7 @@ class HeartflowPlugin(star.Star):
 
         # 获取当前对话的人格系统提示词，让模型了解大参数LLM的角色设定
         persona_system_prompt = await self._get_persona_system_prompt(event)
-        logger.debug(f"8B模型获取人格提示词: {'有' if persona_system_prompt else '无'} | 长度: {len(persona_system_prompt) if persona_system_prompt else 0}")
+        logger.debug(f"小参数模型获取人格提示词: {'有' if persona_system_prompt else '无'} | 长度: {len(persona_system_prompt) if persona_system_prompt else 0}")
 
         # 构建判断上下文
         chat_context = await self._build_chat_context(event)
@@ -210,11 +210,11 @@ class HeartflowPlugin(star.Star):
                     related_messages=judge_data.get("related_messages", [])
                 )
             except json.JSONDecodeError as e:
-                logger.error(f"8B模型返回非有效JSON: {content}")
+                logger.error(f"小参数模型返回非有效JSON: {content}")
                 return JudgeResult(should_reply=False, reasoning=f"JSON解析失败: {str(e)}")
 
         except Exception as e:
-            logger.error(f"8B模型判断异常: {e}")
+            logger.error(f"小参数模型判断异常: {e}")
             return JudgeResult(should_reply=False, reasoning=f"异常: {str(e)}")
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=1000)
@@ -226,8 +226,8 @@ class HeartflowPlugin(star.Star):
             return
 
         try:
-            # 8B模型判断是否需要回复
-            judge_result = await self.judge_with_8b_model(event)
+            # 小参数模型判断是否需要回复
+            judge_result = await self.judge_with_tiny_model(event)
 
             if judge_result.should_reply:
                 # 最终检查（时间间隔、频率限制等）
@@ -415,7 +415,7 @@ class HeartflowPlugin(star.Star):
         return context_info
 
     async def _get_recent_messages(self, event: AstrMessageEvent) -> str:
-        """获取最近的消息历史（用于8B模型判断）"""
+        """获取最近的消息历史（用于小参数模型判断）"""
         try:
             curr_cid = await self.context.conversation_manager.get_curr_conversation_id(event.unified_msg_origin)
             if not curr_cid:
@@ -430,7 +430,7 @@ class HeartflowPlugin(star.Star):
             # 获取最近的 context_messages_count 条消息
             recent_context = context[-self.context_messages_count:] if len(context) > self.context_messages_count else context
 
-            # 直接返回原始的对话历史，让8B模型自己判断
+            # 直接返回原始的对话历史，让小参数模型自己判断
             messages_text = []
             for msg in recent_context:
                 role = msg.get("role", "unknown")
