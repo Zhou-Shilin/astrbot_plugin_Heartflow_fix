@@ -31,7 +31,6 @@
 
 ### 可选配置
 - `reply_threshold`：回复阈值 (0-1，默认0.6)
-- `max_daily_replies`：每日最大回复数 (默认50)
 - `energy_decay_rate`：精力衰减速度 (默认0.1)
 - `energy_recovery_rate`：精力恢复速度 (默认0.02)
 - `context_messages_count`：上下文消息数量 (默认5)

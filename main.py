@@ -32,7 +32,6 @@ class ChatState:
     """群聊状态数据类"""
     energy: float = 1.0
     last_reply_time: float = 0.0
-    daily_replies: int = 0
     last_reset_date: str = ""
     total_messages: int = 0
     total_replies: int = 0
@@ -40,7 +39,6 @@ class ChatState:
 
 
 class HeartflowPlugin(star.Star):
-    """心流插件 - 基于双LLM架构的智能群聊主动回复系统"""
 
     def __init__(self, context: star.Context, config):
         super().__init__(context)
@@ -51,7 +49,6 @@ class HeartflowPlugin(star.Star):
 
         # 心流参数配置
         self.reply_threshold = self.config.get("reply_threshold", 0.6)
-        self.max_daily_replies = self.config.get("max_daily_replies", 50)
         self.energy_decay_rate = self.config.get("energy_decay_rate", 0.1)
         self.energy_recovery_rate = self.config.get("energy_recovery_rate", 0.02)
         self.context_messages_count = self.config.get("context_messages_count", 5)
@@ -109,7 +106,6 @@ class HeartflowPlugin(star.Star):
 - 群聊ID: {event.unified_msg_origin}
 - 我的精力水平: {chat_state.energy:.1f}/1.0
 - 上次发言: {self._get_minutes_since_last_reply(event.unified_msg_origin)}分钟前
-- 今日已回复: {chat_state.daily_replies}次 (上限: {self.max_daily_replies})
 
 ## 群聊基本信息
 {chat_context}
@@ -349,11 +345,7 @@ class HeartflowPlugin(star.Star):
     def _final_reply_check(self, chat_id: str) -> bool:
         """最终回复检查（频率限制等）"""
 
-        chat_state = self._get_chat_state(chat_id)
-
-        # 检查今日回复次数限制
-        if chat_state.daily_replies >= self.max_daily_replies:
-            return False
+        # 移除了每日回复次数限制
 
         return True
 
@@ -367,7 +359,6 @@ class HeartflowPlugin(star.Star):
         state = self.chat_states[chat_id]
 
         if state.last_reset_date != today:
-            state.daily_replies = 0
             state.last_reset_date = today
             # 每日重置时恢复一些精力
             state.energy = min(1.0, state.energy + 0.2)
@@ -451,14 +442,13 @@ class HeartflowPlugin(star.Star):
 
         # 更新回复相关状态
         chat_state.last_reply_time = time.time()
-        chat_state.daily_replies += 1
         chat_state.total_replies += 1
         chat_state.total_messages += 1
 
         # 精力消耗（回复后精力下降）
         chat_state.energy = max(0.1, chat_state.energy - self.energy_decay_rate)
 
-        logger.debug(f"更新主动状态: {chat_id[:20]}... | 精力: {chat_state.energy:.2f} | 今日回复: {chat_state.daily_replies}")
+        logger.debug(f"更新主动状态: {chat_id[:20]}... | 精力: {chat_state.energy:.2f}")
 
     def _update_passive_state(self, event: AstrMessageEvent, judge_result: JudgeResult):
         """更新被动状态（未回复）"""
@@ -487,7 +477,6 @@ class HeartflowPlugin(star.Star):
 📊 **当前状态**
 - 群聊ID: {event.unified_msg_origin}
 - 精力水平: {chat_state.energy:.2f}/1.0 {'🟢' if chat_state.energy > 0.7 else '🟡' if chat_state.energy > 0.3 else '🔴'}
-- 今日回复: {chat_state.daily_replies}/{self.max_daily_replies}
 - 上次回复: {self._get_minutes_since_last_reply(chat_id)}分钟前
 
 📈 **历史统计**

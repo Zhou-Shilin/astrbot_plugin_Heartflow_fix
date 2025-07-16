@@ -17,12 +17,6 @@
     "default": 0.6,
     "hint": "超过此阈值才会主动回复，值越高越严格"
   },
-  "max_daily_replies": {
-    "description": "每日最大主动回复数",
-    "type": "int",
-    "default": 50,
-    "hint": "每个群聊每天最多主动回复的消息数量"
-  },
   "energy_decay_rate": {
     "description": "精力衰减速度",
     "type": "float",
