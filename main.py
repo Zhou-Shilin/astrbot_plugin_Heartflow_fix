@@ -20,6 +20,11 @@ class JudgeResult:
     should_reply: bool = False
     confidence: float = 0.0
     overall_score: float = 0.0
+    related_messages: list = None
+
+    def __post_init__(self):
+        if self.related_messages is None:
+            self.related_messages = []
 
 
 @dataclass
@@ -140,6 +145,11 @@ class HeartflowPlugin(star.Star):
 
 **回复阈值**: {self.reply_threshold} (综合评分达到此分数才回复)
 
+**关联消息筛选要求**：
+- 从上面的对话历史中找出与当前消息内容相关的消息
+- 直接复制相关消息的完整内容，保持原有格式
+- 如果没有相关消息，返回空数组
+
 请以JSON格式回复：
 {{
     "relevance": 分数,
@@ -148,7 +158,8 @@ class HeartflowPlugin(star.Star):
     "timing": 分数,
     "reasoning": "详细分析原因，说明为什么应该或不应该回复，需要结合机器人角色特点进行分析",
     "should_reply": true/false,
-    "confidence": 0.0-1.0
+    "confidence": 0.0-1.0,
+    "related_messages": ["从上面对话历史中筛选出与当前消息可能有关联的消息，直接复制完整内容保持原格式，如果没有关联消息则为空数组"]
 }}
 """
 
@@ -156,7 +167,7 @@ class HeartflowPlugin(star.Star):
             # 使用 provider 调用模型，传入最近的对话历史作为上下文
             recent_contexts = await self._get_recent_contexts(event)
 
-            # 构建完整的判断提示词，将系统提示直接整合到prompt中（因为Gemma3不支持system_prompt）
+            # 构建完整的判断提示词，将系统提示直接整合到prompt中
             complete_judge_prompt = "你是一个专业的群聊回复决策系统，能够准确判断消息价值和回复时机。"
             if persona_system_prompt:
                 complete_judge_prompt += f"\n\n你正在为以下角色的机器人做决策：\n{persona_system_prompt}"
@@ -195,7 +206,8 @@ class HeartflowPlugin(star.Star):
                     reasoning=judge_data.get("reasoning", ""),
                     should_reply=judge_data.get("should_reply", False) and overall_score >= self.reply_threshold,
                     confidence=judge_data.get("confidence", 0.0),
-                    overall_score=overall_score
+                    overall_score=overall_score,
+                    related_messages=judge_data.get("related_messages", [])
                 )
             except json.JSONDecodeError as e:
                 logger.error(f"8B模型返回非有效JSON: {content}")
@@ -262,26 +274,18 @@ class HeartflowPlugin(star.Star):
         # 获取当前对话的人格系统提示词
         system_prompt = await self._get_persona_system_prompt(event)
 
-        # 构建增强的回复提示词
-        enhanced_prompt = f"""基于AI智能分析，自然地参与这个群聊对话：
+        # 构建简化的回复提示词
+        related_messages_text = ""
+        if judge_result.related_messages:
+            related_messages_text = "\n".join(judge_result.related_messages)
+        else:
+            related_messages_text = "无相关历史消息"
 
-**智能分析结果**：
-- 内容相关度：{judge_result.relevance}/10
-- 回复意愿：{judge_result.willingness}/10
-- 社交适宜性：{judge_result.social}/10
-- 时机恰当性：{judge_result.timing}/10
-- 综合评分：{judge_result.overall_score:.2f}
-- 分析说明：{judge_result.reasoning}
-
-**当前消息**：
+        enhanced_prompt = f"""**当前消息**：
 {event.get_sender_name()}: {event.message_str}
 
-请基于以上分析，以自然、有趣、有价值的方式回复这条消息。
-要求：
-1. 回复要自然流畅，不要显得突兀或机械化
-2. 体现出对消息内容的理解和思考
-3. 可以提供有用信息、幽默回应或延续话题
-4. 保持友好和积极的语调
+**历史消息中可能有关联的消息**：
+{related_messages_text}
 """
 
         func_tools_mgr = self.context.get_llm_tool_manager()
@@ -300,7 +304,7 @@ class HeartflowPlugin(star.Star):
             logger.debug(f"心流插件创建ProviderRequest: {type(request_obj)} | prompt长度: {len(enhanced_prompt)} | 系统提示词长度: {len(system_prompt) if system_prompt else 0}")
             yield request_obj
 
-            # 在成功yield后，更新主动回复状态
+            # 更新主动回复状态
             self._update_active_state(event, judge_result)
             logger.info(f"💖 心流主动回复请求已提交 | {event.unified_msg_origin[:20]}... | 评分:{judge_result.overall_score:.2f} | {judge_result.reasoning[:50]}...")
 
@@ -426,16 +430,15 @@ class HeartflowPlugin(star.Star):
             # 获取最近的 context_messages_count 条消息
             recent_context = context[-self.context_messages_count:] if len(context) > self.context_messages_count else context
 
-            # 简化格式化消息历史，只用于8B模型判断
+            # 直接返回原始的对话历史，让8B模型自己判断
             messages_text = []
             for msg in recent_context:
                 role = msg.get("role", "unknown")
                 content = msg.get("content", "")
                 if role in ["user", "assistant"]:
-                    speaker = "用户" if role == "user" else "助手"
-                    messages_text.append(f"{speaker}: {content}")
+                    messages_text.append(content)
 
-            return "\n".join(messages_text) if messages_text else "暂无对话历史"
+            return "\n---\n".join(messages_text) if messages_text else "暂无对话历史"
 
         except Exception as e:
             logger.debug(f"获取消息历史失败: {e}")
