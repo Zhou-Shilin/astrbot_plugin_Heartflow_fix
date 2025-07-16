@@ -30,8 +30,7 @@ Gemma 27b，可在Google Aistudio获取密钥后使用，每天免费14400次，
 
 ### 必要配置
 1. **启用插件**：`enable_heartflow = true`
-2. **小参数判断模型配置**：
-   - `judge_provider_name`：在AstrBot中配置的提供商名称
+2. **小参数判断模型配置**：`judge_provider_name`：在AstrBot中配置的提供商名称
 
 ### 可选配置
 - `reply_threshold`：回复阈值 (0-1，默认0.6)
