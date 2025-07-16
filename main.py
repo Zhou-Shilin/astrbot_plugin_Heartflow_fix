@@ -226,23 +226,18 @@ class HeartflowPlugin(star.Star):
             judge_result = await self.judge_with_tiny_model(event)
 
             if judge_result.should_reply:
-                # 最终检查（时间间隔、频率限制等）
-                if self._final_reply_check(event.unified_msg_origin):
-                    logger.info(f"🔥 心流触发主动回复 | {event.unified_msg_origin[:20]}... | 评分:{judge_result.overall_score:.2f}")
+                logger.info(f"🔥 心流触发主动回复 | {event.unified_msg_origin[:20]}... | 评分:{judge_result.overall_score:.2f}")
 
-                    # 生成主动回复（使用AstrBot现有LLM）
-                    try:
-                        result_count = 0
-                        async for result in self._generate_active_reply(event, judge_result):
-                            result_count += 1
-                            logger.debug(f"心流回复生成器产生结果 #{result_count}: {type(result)}")
-                            yield result
+                # 生成主动回复
+                try:
+                    result_count = 0
+                    async for result in self._generate_active_reply(event, judge_result):
+                        result_count += 1
+                        logger.debug(f"心流回复生成器产生结果 #{result_count}: {type(result)}")
+                        yield result
 
-                    except Exception as e:
-                        logger.error(f"执行心流回复生成器异常: {e}")
-                        self._update_passive_state(event, judge_result)
-                else:
-                    logger.debug(f"心流判断通过但被最终检查拦截: {event.unified_msg_origin}")
+                except Exception as e:
+                    logger.error(f"执行心流回复生成器异常: {e}")
                     self._update_passive_state(event, judge_result)
             else:
                 # 记录被动状态
@@ -255,7 +250,7 @@ class HeartflowPlugin(star.Star):
             logger.error(traceback.format_exc())
 
     async def _generate_active_reply(self, event: AstrMessageEvent, judge_result: JudgeResult):
-        """使用AstrBot内部LLM处理机制生成主动回复"""
+        """生成主动回复"""
 
         # 获取当前对话信息
         curr_cid = await self.context.conversation_manager.get_curr_conversation_id(event.unified_msg_origin)
@@ -339,13 +334,6 @@ class HeartflowPlugin(star.Star):
         if not event.message_str or not event.message_str.strip():
             return False
 
-
-        return True
-
-    def _final_reply_check(self, chat_id: str) -> bool:
-        """最终回复检查（频率限制等）"""
-
-        # 移除了每日回复次数限制
 
         return True
 
@@ -526,7 +514,6 @@ class HeartflowPlugin(star.Star):
             # 获取人格ID
             persona_id = conversation.persona_id
 
-            # 根据文档说明处理不同情况
             if not persona_id:
                 # persona_id 为 None 时，使用默认人格
                 persona_id = self.context.provider_manager.selected_default_persona["name"]
