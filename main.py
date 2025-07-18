@@ -326,7 +326,7 @@ class HeartflowPlugin(star.Star):
             return False
 
         # 跳过唤醒消息（包括@机器人、唤醒前缀、正则匹配等所有唤醒情况）
-        if event.is_wake:
+        if event.is_at_or_wake_command:
             logger.debug(f"跳过bot被唤醒的消息: {event.message_str}")
             return False
 
