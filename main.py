@@ -311,9 +311,9 @@ class HeartflowPlugin(star.Star):
         if not self.config.get("enable_heartflow", False):
             return False
 
-        # 跳过指令消息
-        if event.is_at_or_wake_command:
-            logger.debug(f"跳过指令消息: {event.message_str}")
+        # 跳过唤醒消息（包括@机器人、唤醒前缀、正则匹配等所有唤醒情况）
+        if event.is_wake:
+            logger.debug(f"跳过bot被唤醒的消息: {event.message_str}")
             return False
 
         # 检查白名单
@@ -333,7 +333,6 @@ class HeartflowPlugin(star.Star):
         # 跳过空消息
         if not event.message_str or not event.message_str.strip():
             return False
-
 
         return True
 
