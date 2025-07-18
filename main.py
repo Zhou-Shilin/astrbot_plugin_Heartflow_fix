@@ -242,17 +242,15 @@ class HeartflowPlugin(star.Star):
             if judge_result.should_reply:
                 logger.info(f"🔥 心流触发主动回复 | {event.unified_msg_origin[:20]}... | 评分:{judge_result.overall_score:.2f}")
 
-                # 生成主动回复
-                try:
-                    result_count = 0
-                    async for result in self._generate_active_reply(event, judge_result):
-                        result_count += 1
-                        logger.debug(f"心流回复生成器产生结果 #{result_count}: {type(result)}")
-                        yield result
-
-                except Exception as e:
-                    logger.error(f"执行心流回复生成器异常: {e}")
-                    self._update_passive_state(event, judge_result)
+                # 设置唤醒标志为真，调用LLM
+                event.is_at_or_wake_command = True
+                
+                # 更新主动回复状态
+                self._update_active_state(event, judge_result)
+                logger.info(f"💖 心流设置唤醒标志 | {event.unified_msg_origin[:20]}... | 评分:{judge_result.overall_score:.2f} | {judge_result.reasoning[:50]}...")
+                
+                # 不需要yield任何内容，让核心系统处理
+                return
             else:
                 # 记录被动状态
                 logger.debug(f"心流判断不通过 | {event.unified_msg_origin[:20]}... | 评分:{judge_result.overall_score:.2f} | 原因: {judge_result.reasoning[:30]}...")
@@ -263,61 +261,6 @@ class HeartflowPlugin(star.Star):
             import traceback
             logger.error(traceback.format_exc())
 
-    async def _generate_active_reply(self, event: AstrMessageEvent, judge_result: JudgeResult):
-        """生成主动回复"""
-
-        # 获取当前对话信息
-        curr_cid = await self.context.conversation_manager.get_curr_conversation_id(event.unified_msg_origin)
-        conversation = None
-        context = []
-
-        if curr_cid:
-            conversation = await self.context.conversation_manager.get_conversation(event.unified_msg_origin, curr_cid)
-            if conversation and conversation.history:
-                context = json.loads(conversation.history)
-
-        # 获取当前对话的人格系统提示词
-        system_prompt = await self._get_persona_system_prompt(event)
-
-        # 构建简化的回复提示词
-        related_messages_text = ""
-        if judge_result.related_messages:
-            related_messages_text = "\n".join(judge_result.related_messages)
-        else:
-            related_messages_text = "无相关历史消息"
-
-        enhanced_prompt = f"""**当前消息**：
-{event.get_sender_name()}: {event.message_str}
-
-**历史消息中可能有关联的消息**：
-{related_messages_text}
-"""
-
-        func_tools_mgr = self.context.get_llm_tool_manager()
-
-        try:
-            request_obj = event.request_llm(
-                prompt=enhanced_prompt,
-                func_tool_manager=func_tools_mgr,
-                session_id=curr_cid,
-                contexts=context,
-                system_prompt=system_prompt,
-                image_urls=[],
-                conversation=conversation
-            )
-
-            logger.debug(f"心流插件创建ProviderRequest: {type(request_obj)} | prompt长度: {len(enhanced_prompt)} | 系统提示词长度: {len(system_prompt) if system_prompt else 0}")
-            yield request_obj
-
-            # 更新主动回复状态
-            self._update_active_state(event, judge_result)
-            logger.info(f"💖 心流主动回复请求已提交 | {event.unified_msg_origin[:20]}... | 评分:{judge_result.overall_score:.2f} | {judge_result.reasoning[:50]}...")
-
-        except Exception as e:
-            logger.error(f"生成心流回复失败: {e}")
-            yield event.plain_result("生成回复时出现错误，请稍后再试。")
-            self._update_active_state(event, judge_result)
-
     def _should_process_message(self, event: AstrMessageEvent) -> bool:
         """检查是否应该处理这条消息"""
 
@@ -325,9 +268,9 @@ class HeartflowPlugin(star.Star):
         if not self.config.get("enable_heartflow", False):
             return False
 
-        # 跳过唤醒消息（包括@机器人、唤醒前缀、正则匹配等所有唤醒情况）
+        # 跳过已经被其他插件或系统标记为唤醒的消息
         if event.is_at_or_wake_command:
-            logger.debug(f"跳过bot被唤醒的消息: {event.message_str}")
+            logger.debug(f"跳过已被标记为唤醒的消息: {event.message_str}")
             return False
 
         # 检查白名单
