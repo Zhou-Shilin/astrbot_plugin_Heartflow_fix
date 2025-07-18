@@ -16,6 +16,7 @@ class JudgeResult:
     willingness: float = 0.0
     social: float = 0.0
     timing: float = 0.0
+    continuity: float = 0.0  # 新增：与上次回复的连贯性
     reasoning: str = ""
     should_reply: bool = False
     confidence: float = 0.0
@@ -60,10 +61,11 @@ class HeartflowPlugin(star.Star):
 
         # 判断权重配置
         self.weights = {
-            "relevance": 0.3,
-            "willingness": 0.25,
-            "social": 0.25,
-            "timing": 0.2
+            "relevance": 0.25,
+            "willingness": 0.2,
+            "social": 0.2,
+            "timing": 0.15,
+            "continuity": 0.2  # 新增：与上次回复的连贯性
         }
 
         logger.info("心流插件已初始化")
@@ -95,6 +97,7 @@ class HeartflowPlugin(star.Star):
         # 构建判断上下文
         chat_context = await self._build_chat_context(event)
         recent_messages = await self._get_recent_messages(event)
+        last_bot_reply = await self._get_last_bot_reply(event)  # 新增：获取上次bot回复
 
         judge_prompt = f"""
 你是群聊机器人的决策系统，需要判断是否应该主动回复以下消息。
@@ -113,13 +116,16 @@ class HeartflowPlugin(star.Star):
 ## 最近{self.context_messages_count}条对话历史
 {recent_messages}
 
+## 上次机器人回复
+{last_bot_reply if last_bot_reply else "暂无上次回复记录"}
+
 ## 待判断消息
 发送者: {event.get_sender_name()}
 内容: {event.message_str}
 时间: {datetime.datetime.now().strftime('%H:%M:%S')}
 
 ## 评估要求
-请从以下4个维度评估（0-10分），**重要提醒：基于上述机器人角色设定来判断是否适合回复**：
+请从以下5个维度评估（0-10分），**重要提醒：基于上述机器人角色设定来判断是否适合回复**：
 
 1. **内容相关度**(0-10)：消息是否有趣、有价值、适合我回复
    - 考虑消息的质量、话题性、是否需要回应
@@ -139,6 +145,11 @@ class HeartflowPlugin(star.Star):
    - 考虑距离上次回复的时间间隔
    - 考虑消息的紧急性和时效性
 
+5. **对话连贯性**(0-10)：当前消息与上次机器人回复的关联程度
+   - 如果当前消息是对上次回复的回应或延续，应给高分
+   - 如果当前消息与上次回复完全无关，给中等分数
+   - 如果没有上次回复记录，给默认分数5分
+
 **回复阈值**: {self.reply_threshold} (综合评分达到此分数才回复)
 
 **关联消息筛选要求**：
@@ -152,7 +163,8 @@ class HeartflowPlugin(star.Star):
     "willingness": 分数,
     "social": 分数,
     "timing": 分数,
-    "reasoning": "详细分析原因，说明为什么应该或不应该回复，需要结合机器人角色特点进行分析",
+    "continuity": 分数,
+    "reasoning": "详细分析原因，说明为什么应该或不应该回复，需要结合机器人角色特点进行分析，特别说明与上次回复的关联性",
     "should_reply": true/false,
     "confidence": 0.0-1.0,
     "related_messages": ["从上面对话历史中筛选出与当前消息可能有关联的消息，直接复制完整内容保持原格式，如果没有关联消息则为空数组"]
@@ -191,7 +203,8 @@ class HeartflowPlugin(star.Star):
                     judge_data.get("relevance", 0) * self.weights["relevance"] +
                     judge_data.get("willingness", 0) * self.weights["willingness"] +
                     judge_data.get("social", 0) * self.weights["social"] +
-                    judge_data.get("timing", 0) * self.weights["timing"]
+                    judge_data.get("timing", 0) * self.weights["timing"] +
+                    judge_data.get("continuity", 0) * self.weights["continuity"]
                 ) / 10.0
 
                 return JudgeResult(
@@ -199,6 +212,7 @@ class HeartflowPlugin(star.Star):
                     willingness=judge_data.get("willingness", 0),
                     social=judge_data.get("social", 0),
                     timing=judge_data.get("timing", 0),
+                    continuity=judge_data.get("continuity", 0),
                     reasoning=judge_data.get("reasoning", ""),
                     should_reply=judge_data.get("should_reply", False) and overall_score >= self.reply_threshold,
                     confidence=judge_data.get("confidence", 0.0),
@@ -422,6 +436,32 @@ class HeartflowPlugin(star.Star):
             logger.debug(f"获取消息历史失败: {e}")
             return "暂无对话历史"
 
+    async def _get_last_bot_reply(self, event: AstrMessageEvent) -> str:
+        """获取上次机器人的回复消息"""
+        try:
+            curr_cid = await self.context.conversation_manager.get_curr_conversation_id(event.unified_msg_origin)
+            if not curr_cid:
+                return None
+
+            conversation = await self.context.conversation_manager.get_conversation(event.unified_msg_origin, curr_cid)
+            if not conversation or not conversation.history:
+                return None
+
+            context = json.loads(conversation.history)
+
+            # 从后往前查找最后一条assistant消息
+            for msg in reversed(context):
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                if role == "assistant" and content.strip():
+                    return content
+
+            return None
+
+        except Exception as e:
+            logger.debug(f"获取上次bot回复失败: {e}")
+            return None
+
     def _update_active_state(self, event: AstrMessageEvent, judge_result: JudgeResult):
         """更新主动回复状态"""
         chat_id = event.unified_msg_origin
@@ -476,6 +516,13 @@ class HeartflowPlugin(star.Star):
 - 判断提供商: {self.judge_provider_name}
 - 白名单模式: {'✅ 开启' if self.whitelist_enabled else '❌ 关闭'}
 - 白名单群聊数: {len(self.chat_whitelist) if self.whitelist_enabled else 0}
+
+🎯 **评分权重**
+- 内容相关度: {self.weights['relevance']:.0%}
+- 回复意愿: {self.weights['willingness']:.0%}
+- 社交适宜性: {self.weights['social']:.0%}
+- 时机恰当性: {self.weights['timing']:.0%}
+- 对话连贯性: {self.weights['continuity']:.0%}
 
 🎯 **插件状态**: {'✅ 已启用' if self.config.get('enable_heartflow', False) else '❌ 已禁用'}
 """
