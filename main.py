@@ -58,6 +58,9 @@ class HeartflowPlugin(star.Star):
 
         # 群聊状态管理
         self.chat_states: Dict[str, ChatState] = {}
+        
+        # 系统提示词缓存：{conversation_id: {"original": str, "summarized": str, "persona_id": str}}
+        self.system_prompt_cache: Dict[str, Dict[str, str]] = {}
 
         # 判断权重配置
         self.weights = {
@@ -69,6 +72,104 @@ class HeartflowPlugin(star.Star):
         }
 
         logger.info("心流插件已初始化")
+
+    async def _get_or_create_summarized_system_prompt(self, event: AstrMessageEvent, original_prompt: str) -> str:
+        """获取或创建精简版系统提示词"""
+        try:
+            # 获取当前会话ID
+            curr_cid = await self.context.conversation_manager.get_curr_conversation_id(event.unified_msg_origin)
+            if not curr_cid:
+                return original_prompt
+            
+            # 获取当前人格ID作为缓存键的一部分
+            conversation = await self.context.conversation_manager.get_conversation(event.unified_msg_origin, curr_cid)
+            persona_id = conversation.persona_id if conversation else "default"
+            
+            # 构建缓存键
+            cache_key = f"{curr_cid}_{persona_id}"
+            
+            # 检查缓存
+            if cache_key in self.system_prompt_cache:
+                cached = self.system_prompt_cache[cache_key]
+                # 如果原始提示词没有变化，返回缓存的总结
+                if cached.get("original") == original_prompt:
+                    logger.debug(f"使用缓存的精简系统提示词: {cache_key}")
+                    return cached.get("summarized", original_prompt)
+            
+            # 如果没有缓存或原始提示词发生变化，进行总结
+            if not original_prompt or len(original_prompt.strip()) < 50:
+                # 如果原始提示词太短，直接返回
+                return original_prompt
+            
+            summarized_prompt = await self._summarize_system_prompt(original_prompt)
+            
+            # 更新缓存
+            self.system_prompt_cache[cache_key] = {
+                "original": original_prompt,
+                "summarized": summarized_prompt,
+                "persona_id": persona_id
+            }
+            
+            logger.info(f"创建新的精简系统提示词: {cache_key} | 原长度:{len(original_prompt)} -> 新长度:{len(summarized_prompt)}")
+            return summarized_prompt
+            
+        except Exception as e:
+            logger.error(f"获取精简系统提示词失败: {e}")
+            return original_prompt
+    
+    async def _summarize_system_prompt(self, original_prompt: str) -> str:
+        """使用小模型对系统提示词进行总结"""
+        try:
+            if not self.judge_provider_name:
+                return original_prompt
+            
+            judge_provider = self.context.get_provider_by_id(self.judge_provider_name)
+            if not judge_provider:
+                return original_prompt
+            
+            summarize_prompt = f"""请将以下机器人角色设定总结为简洁的核心要点，保留关键的性格特征、行为方式和角色定位。
+总结后的内容应该在100-200字以内，突出最重要的角色特点。
+
+原始角色设定：
+{original_prompt}
+
+请以JSON格式回复：
+{{
+    "summarized_persona": "精简后的角色设定，保留核心特征和行为方式"
+}}
+
+**重要：你的回复必须是完整的JSON对象，不要包含任何其他内容！**"""
+
+            llm_response = await judge_provider.text_chat(
+                prompt=summarize_prompt,
+                contexts=[]  # 不需要上下文
+            )
+
+            content = llm_response.completion_text.strip()
+            
+            # 尝试提取JSON
+            try:
+                if content.startswith("```json"):
+                    content = content.replace("```json", "").replace("```", "").strip()
+                elif content.startswith("```"):
+                    content = content.replace("```", "").strip()
+
+                result_data = json.loads(content)
+                summarized = result_data.get("summarized_persona", "")
+                
+                if summarized and len(summarized.strip()) > 10:
+                    return summarized.strip()
+                else:
+                    logger.warning("小模型返回的总结内容为空或过短")
+                    return original_prompt
+                    
+            except json.JSONDecodeError as e:
+                logger.error(f"小模型总结系统提示词返回非有效JSON: {content}")
+                return original_prompt
+                
+        except Exception as e:
+            logger.error(f"总结系统提示词异常: {e}")
+            return original_prompt
 
     async def judge_with_tiny_model(self, event: AstrMessageEvent) -> JudgeResult:
         """使用小模型进行智能判断"""
@@ -91,8 +192,12 @@ class HeartflowPlugin(star.Star):
         chat_state = self._get_chat_state(event.unified_msg_origin)
 
         # 获取当前对话的人格系统提示词，让模型了解大参数LLM的角色设定
-        persona_system_prompt = await self._get_persona_system_prompt(event)
-        logger.debug(f"小参数模型获取人格提示词: {'有' if persona_system_prompt else '无'} | 长度: {len(persona_system_prompt) if persona_system_prompt else 0}")
+        original_persona_prompt = await self._get_persona_system_prompt(event)
+        logger.debug(f"小参数模型获取原始人格提示词: {'有' if original_persona_prompt else '无'} | 长度: {len(original_persona_prompt) if original_persona_prompt else 0}")
+        
+        # 获取或创建精简版系统提示词
+        persona_system_prompt = await self._get_or_create_summarized_system_prompt(event, original_persona_prompt)
+        logger.debug(f"小参数模型使用精简人格提示词: {'有' if persona_system_prompt else '无'} | 长度: {len(persona_system_prompt) if persona_system_prompt else 0}")
 
         # 构建判断上下文
         chat_context = await self._build_chat_context(event)
@@ -157,6 +262,8 @@ class HeartflowPlugin(star.Star):
 - 直接复制相关消息的完整内容，保持原有格式
 - 如果没有相关消息，返回空数组
 
+**重要！！！请严格按照以下JSON格式回复，不要添加任何其他内容：**
+
 请以JSON格式回复：
 {{
     "relevance": 分数,
@@ -169,6 +276,8 @@ class HeartflowPlugin(star.Star):
     "confidence": 0.0-1.0,
     "related_messages": ["从上面对话历史中筛选出与当前消息可能有关联的消息，直接复制完整内容保持原格式，如果没有关联消息则为空数组"]
 }}
+
+**注意：你的回复必须是完整的JSON对象，不要包含任何解释性文字或其他内容！**
 """
 
         try:
@@ -179,7 +288,7 @@ class HeartflowPlugin(star.Star):
             complete_judge_prompt = "你是一个专业的群聊回复决策系统，能够准确判断消息价值和回复时机。"
             if persona_system_prompt:
                 complete_judge_prompt += f"\n\n你正在为以下角色的机器人做决策：\n{persona_system_prompt}"
-            complete_judge_prompt += "\n\n请严格按照JSON格式返回结果，不要包含其他内容。\n\n"
+            complete_judge_prompt += "\n\n**重要提醒：你必须严格按照JSON格式返回结果，不要包含任何其他内容！请不要进行对话，只返回JSON！**\n\n"
             complete_judge_prompt += judge_prompt
 
             llm_response = await judge_provider.text_chat(
@@ -319,7 +428,11 @@ class HeartflowPlugin(star.Star):
         return int((time.time() - chat_state.last_reply_time) / 60)
 
     async def _get_recent_contexts(self, event: AstrMessageEvent) -> list:
-        """获取最近的对话上下文（用于传递给LLM）"""
+        """获取最近的对话上下文（用于传递给小参数模型）
+        
+        注意：此方法会过滤掉函数调用相关内容，只保留纯文本消息，
+        以避免小参数模型因不支持函数调用而报错。
+        """
         try:
             curr_cid = await self.context.conversation_manager.get_curr_conversation_id(event.unified_msg_origin)
             if not curr_cid:
@@ -334,7 +447,22 @@ class HeartflowPlugin(star.Star):
             # 获取最近的 context_messages_count 条消息
             recent_context = context[-self.context_messages_count:] if len(context) > self.context_messages_count else context
 
-            return recent_context
+            # 过滤掉函数调用相关内容，避免小参数模型报错
+            filtered_context = []
+            for msg in recent_context:
+                # 只保留纯文本的用户和助手消息
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                
+                if role in ["user", "assistant"] and content and isinstance(content, str):
+                    # 创建一个干净的消息副本，只包含文本内容
+                    clean_msg = {
+                        "role": role,
+                        "content": content
+                    }
+                    filtered_context.append(clean_msg)
+
+            return filtered_context
 
         except Exception as e:
             logger.debug(f"获取对话上下文失败: {e}")
@@ -460,6 +588,9 @@ class HeartflowPlugin(star.Star):
 - 白名单模式: {'✅ 开启' if self.whitelist_enabled else '❌ 关闭'}
 - 白名单群聊数: {len(self.chat_whitelist) if self.whitelist_enabled else 0}
 
+🧠 **智能缓存**
+- 系统提示词缓存: {len(self.system_prompt_cache)} 个
+
 🎯 **评分权重**
 - 内容相关度: {self.weights['relevance']:.0%}
 - 回复意愿: {self.weights['willingness']:.0%}
@@ -483,6 +614,41 @@ class HeartflowPlugin(star.Star):
 
         event.set_result(event.plain_result("✅ 心流状态已重置"))
         logger.info(f"心流状态已重置: {chat_id}")
+
+    # 管理员命令：查看系统提示词缓存
+    @filter.command("heartflow_cache")
+    async def heartflow_cache_status(self, event: AstrMessageEvent):
+        """查看系统提示词缓存状态"""
+        
+        cache_info = "🧠 系统提示词缓存状态\n\n"
+        
+        if not self.system_prompt_cache:
+            cache_info += "📭 当前无缓存记录"
+        else:
+            cache_info += f"📝 总缓存数量: {len(self.system_prompt_cache)}\n\n"
+            
+            for cache_key, cache_data in self.system_prompt_cache.items():
+                original_len = len(cache_data.get("original", ""))
+                summarized_len = len(cache_data.get("summarized", ""))
+                persona_id = cache_data.get("persona_id", "unknown")
+                
+                cache_info += f"🔑 **缓存键**: {cache_key}\n"
+                cache_info += f"👤 **人格ID**: {persona_id}\n"
+                cache_info += f"📏 **压缩率**: {original_len} -> {summarized_len} ({(1-summarized_len/max(1,original_len))*100:.1f}% 压缩)\n"
+                cache_info += f"📄 **精简内容**: {cache_data.get('summarized', '')[:100]}...\n\n"
+        
+        event.set_result(event.plain_result(cache_info))
+
+    # 管理员命令：清除系统提示词缓存
+    @filter.command("heartflow_cache_clear")
+    async def heartflow_cache_clear(self, event: AstrMessageEvent):
+        """清除系统提示词缓存"""
+        
+        cache_count = len(self.system_prompt_cache)
+        self.system_prompt_cache.clear()
+        
+        event.set_result(event.plain_result(f"✅ 已清除 {cache_count} 个系统提示词缓存"))
+        logger.info(f"系统提示词缓存已清除，共清除 {cache_count} 个缓存")
 
     async def _get_persona_system_prompt(self, event: AstrMessageEvent) -> str:
         """获取当前对话的人格系统提示词"""
